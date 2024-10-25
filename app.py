@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 import logging
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
 
 # Initialize the Flask app
@@ -17,12 +18,24 @@ CORS(app)
 # Set up basic logging
 logging.basicConfig(level=logging.INFO)
 
+# Indian stock symbol mapping
+INDIAN_STOCKS = {
+    "HINDALCO": "HINDALCO.NS",
+    "TATAMOTORS": "TATAMOTORS.NS",
+    "RELIANCE": "RELIANCE.NS",
+    "INFY": "INFY.NS",
+    "TCS": "TCS.NS",
+    "HDFC": "HDFC.NS",
+    "ICICIBANK": "ICICIBANK.NS",
+    "SBIN": "SBIN.NS",
+    "BAJFINANCE": "BAJFINANCE.NS",
+    "LT": "LT.NS",
+    # Add more Indian stock symbols as needed
+}
+
 # Function to fetch stock data
-def get_stock_data(symbol, start='2020-01-01', end=None):
-    if end is None:
-        end = datetime.now().strftime('%Y-%m-%d')
-    
-    logging.info(f"Fetching stock data for symbol: {symbol} from {start} to {end}")
+def get_stock_data(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d')):
+    logging.info(f"Fetching stock data for symbol: {symbol}")
     stock_data = yf.download(symbol, start=start, end=end)
     
     if stock_data.empty:
@@ -37,11 +50,19 @@ def get_stock_data(symbol, start='2020-01-01', end=None):
 def train_model(stock_data, model_type='linear'):
     logging.info(f"Training model using {model_type} model")
     
+    # Create additional features
+    stock_data['High'] = stock_data['Close'].rolling(window=5).max()
+    stock_data['Low'] = stock_data['Close'].rolling(window=5).min()
+    stock_data['Volume'] = yf.download(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d'))['Volume'].ffill()
+
+    # Drop rows with NaN values (if any)
+    stock_data.dropna(inplace=True)
+
     # Create the 'Prediction' column (next day's close price)
     stock_data['Prediction'] = stock_data[['Close']].shift(-1)
-    
+
     # Define features (X) and labels (y)
-    X = stock_data.drop(['Prediction'], axis=1).values[:-1]  # Closing price as features
+    X = stock_data[['Close', 'High', 'Low', 'Volume']].values[:-1]  # Additional features
     y = stock_data['Prediction'].values[:-1]  # Next day's closing price as labels
 
     # If there isn't enough data to make a prediction
@@ -61,22 +82,23 @@ def train_model(stock_data, model_type='linear'):
     model.fit(X_train, y_train)
 
     # Now we predict the next day's stock price using the last available close price (1 feature)
-    last_close_price = stock_data['Close'].values[-1].reshape(-1, 1)  # Reshape for single feature
+    last_close_price = stock_data[['Close', 'High', 'Low', 'Volume']].values[-1].reshape(1, -1)  # Reshape for multiple features
     future_price = model.predict(last_close_price)[0]  # Get future price as a single value
     current_price = last_close_price[0][0]  # Current closing price
 
     logging.info(f"Prediction completed. Future price: {future_price}")
 
-    # Calculate stop loss percentage as 2% of the current price
-    stop_loss_percentage = 0.02 * current_price
+    # Calculate stop loss percentage as a dynamic value based on price volatility
+    volatility = np.std(stock_data['Close'].pct_change().dropna())  # Historical volatility
+    stop_loss_percentage = max(0.02, volatility) * current_price  # Use max to ensure a minimum stop loss
     stop_loss_price = current_price - stop_loss_percentage
 
-    # Determine recommendation based on price change
+    # Determine recommendation based on price change with a dynamic threshold
     price_diff = future_price - current_price
-    threshold = 0.01 * current_price  # 1% threshold to avoid small fluctuations
-    if price_diff > threshold:
+    dynamic_threshold = max(0.01 * current_price, volatility)  # Use volatility as a base for threshold
+    if price_diff > dynamic_threshold:
         recommendation = "Buy"
-    elif price_diff < -threshold:
+    elif price_diff < -dynamic_threshold:
         recommendation = "Sell"
     else:
         recommendation = "Hold"
@@ -101,24 +123,22 @@ def predict():
             logging.warning("No stock symbol provided")
             return jsonify({'error': 'Please provide a valid stock symbol.'}), 400
 
-        # Fetch stock data for the last 30 days
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-        stock_data = get_stock_data(symbol, start=start_date, end=end_date)
-
-        # Get prediction and stop loss
+        # Fetch stock data and make the prediction
+        stock_data = get_stock_data(symbol)
         recommendation, future_price, current_price, stop_loss_price = train_model(stock_data, model_type=model_type)
         logging.info(f"Recommendation for {symbol}: {recommendation}")
 
         # Determine currency based on symbol
-        currency = '₹' if symbol.endswith('.NS') else '$'  # Indian Rupee for NSE stocks
+        if symbol.endswith('.NS'):
+            currency = '₹'  # Indian Rupee for NSE stocks
+        else:
+            currency = '$'  # US Dollar for other stocks
 
         response = jsonify({
             'prediction': f"The recommendation for {symbol} is to '{recommendation}'.",
-            'details': f"Predicted future price: {currency}{future_price:.2f}, Current price: {currency}{current_price:.2f}",
-            'stop_loss': f"Suggested Stop Loss Price: {currency}{stop_loss_price:.2f}"
+            'details': f"Predicted future price: {currency}{future_price:.2f}, Current price: {currency}{current_price:.2f}, Stop Loss Price: {currency}{stop_loss_price:.2f}"
         })
-        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Origin', '*')  # Add CORS headers manually
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
         response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
 
