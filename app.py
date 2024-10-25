@@ -8,7 +8,6 @@ import pandas as pd
 import logging
 from flask_cors import CORS
 from datetime import datetime
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import os
 
 # Initialize the Flask app
@@ -17,21 +16,6 @@ CORS(app)
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO)
-
-# Indian stock symbol mapping
-INDIAN_STOCKS = {
-    "HINDALCO": "HINDALCO.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
-    "RELIANCE": "RELIANCE.NS",
-    "INFY": "INFY.NS",
-    "TCS": "TCS.NS",
-    "HDFC": "HDFC.NS",
-    "ICICIBANK": "ICICIBANK.NS",
-    "SBIN": "SBIN.NS",
-    "BAJFINANCE": "BAJFINANCE.NS",
-    "LT": "LT.NS",
-    # Add more Indian stock symbols as needed
-}
 
 # Function to fetch stock data
 def get_stock_data(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d')):
@@ -91,7 +75,7 @@ def train_model(symbol, stock_data, model_type='linear'):
 
     logging.info(f"Prediction completed. Future price: {future_price}")
 
-    # Calculate stop loss percentage as a dynamic value based on price volatility
+    # Calculate stop loss percentage based on price volatility
     volatility = np.std(stock_data['Close'].pct_change().dropna())  # Historical volatility
     stop_loss_percentage = max(0.02, volatility) * current_price  # Use max to ensure a minimum stop loss
     stop_loss_price = current_price - stop_loss_percentage
@@ -99,6 +83,8 @@ def train_model(symbol, stock_data, model_type='linear'):
     # Determine recommendation based on price change with a dynamic threshold
     price_diff = future_price - current_price
     dynamic_threshold = max(0.01 * current_price, volatility)  # Use volatility as a base for threshold
+    
+    # Adjusting recommendation logic
     if price_diff > dynamic_threshold:
         recommendation = "Buy"
     elif price_diff < -dynamic_threshold:
@@ -132,10 +118,7 @@ def predict():
         logging.info(f"Recommendation for {symbol}: {recommendation}")
 
         # Determine currency based on symbol
-        if symbol.endswith('.NS'):
-            currency = '₹'  # Indian Rupee for NSE stocks
-        else:
-            currency = '$'  # US Dollar for other stocks
+        currency = '₹' if symbol.endswith('.NS') else '$'  # Indian Rupee for NSE stocks, else assume USD
 
         response = jsonify({
             'prediction': f"The recommendation for {symbol} is to '{recommendation}'.",
