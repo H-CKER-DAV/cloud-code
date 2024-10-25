@@ -47,13 +47,16 @@ def get_stock_data(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%
     return stock_data
 
 # Function to train the model and predict Buy/Sell/Hold
-def train_model(stock_data, model_type='linear'):
+def train_model(symbol, stock_data, model_type='linear'):
     logging.info(f"Training model using {model_type} model")
     
     # Create additional features
     stock_data['High'] = stock_data['Close'].rolling(window=5).max()
     stock_data['Low'] = stock_data['Close'].rolling(window=5).min()
-    stock_data['Volume'] = yf.download(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d'))['Volume'].ffill()
+    
+    # Fetch volume data
+    volume_data = yf.download(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d'))['Volume']
+    stock_data['Volume'] = volume_data.ffill()  # Forward fill volume data
 
     # Drop rows with NaN values (if any)
     stock_data.dropna(inplace=True)
@@ -125,7 +128,7 @@ def predict():
 
         # Fetch stock data and make the prediction
         stock_data = get_stock_data(symbol)
-        recommendation, future_price, current_price, stop_loss_price = train_model(stock_data, model_type=model_type)
+        recommendation, future_price, current_price, stop_loss_price = train_model(symbol, stock_data, model_type=model_type)
         logging.info(f"Recommendation for {symbol}: {recommendation}")
 
         # Determine currency based on symbol
