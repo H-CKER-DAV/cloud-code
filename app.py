@@ -7,53 +7,73 @@ import numpy as np
 import pandas as pd
 import logging
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
+# Initialize the Flask app
 app = Flask(__name__)
 CORS(app)
+
+# Set up basic logging
 logging.basicConfig(level=logging.INFO)
 
-# Symbol mapping for Indian stocks
-INDIAN_STOCKS = {
-    "HINDALCO": "HINDALCO.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
-    "RELIANCE": "RELIANCE.NS",
-    "INFY": "INFY.NS",
-    "TCS": "TCS.NS",
-    "HDFC": "HDFC.NS",
-    "ICICIBANK": "ICICIBANK.NS",
-    "SBIN": "SBIN.NS",
-    "BAJFINANCE": "BAJFINANCE.NS",
-    "LT": "LT.NS",
-}
-
 # Function to fetch stock data
-def get_stock_data(symbol, start='2010-01-01', end=datetime.now().strftime('%Y-%m-%d')):
+def get_stock_data(symbol, start='2020-01-01', end=None):
+    if end is None:
+        end = datetime.now().strftime('%Y-%m-%d')
+    
+    logging.info(f"Fetching stock data for symbol: {symbol} from {start} to {end}")
     stock_data = yf.download(symbol, start=start, end=end)
+    
     if stock_data.empty:
         raise ValueError("No data found for the provided stock symbol.")
-    return stock_data[['Close']].ffill()
+    
+    stock_data = stock_data[['Close']]  # Only keep the 'Close' column
+    stock_data = stock_data.ffill()  # Fill missing data (forward fill)
+    logging.info(f"Stock data fetched successfully. Data size: {len(stock_data)} rows")
+    return stock_data
 
-# Function to train the model and provide Buy/Sell/Hold recommendation
-def train_model(stock_data, prediction_days=15, model_type='linear'):
-    stock_data['Prediction'] = stock_data[['Close']].shift(-prediction_days)
-    X = stock_data.drop(['Prediction'], axis=1).values[:-prediction_days]
-    y = stock_data['Prediction'].values[:-prediction_days]
+# Function to train the model and predict Buy/Sell/Hold
+def train_model(stock_data, model_type='linear'):
+    logging.info(f"Training model using {model_type} model")
+    
+    # Create the 'Prediction' column (next day's close price)
+    stock_data['Prediction'] = stock_data[['Close']].shift(-1)
+    
+    # Define features (X) and labels (y)
+    X = stock_data.drop(['Prediction'], axis=1).values[:-1]  # Closing price as features
+    y = stock_data['Prediction'].values[:-1]  # Next day's closing price as labels
 
-    if len(X) < prediction_days:
+    # If there isn't enough data to make a prediction
+    if len(X) < 1:
         raise ValueError("Not enough data to train the model.")
-
+    
+    # Split the data into training and test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-    model = LinearRegression() if model_type == 'linear' else RandomForestRegressor(n_estimators=100)
+
+    # Select the model type (Linear Regression or Random Forest)
+    if model_type == 'linear':
+        model = LinearRegression()
+    else:
+        model = RandomForestRegressor(n_estimators=100)
+    
+    # Train the model
     model.fit(X_train, y_train)
 
-    last_close_price = stock_data['Close'].values[-1].reshape(-1, 1)
-    future_price = model.predict(last_close_price)[0]
-    current_price = last_close_price[0][0]
+    # Now we predict the next day's stock price using the last available close price (1 feature)
+    last_close_price = stock_data['Close'].values[-1].reshape(-1, 1)  # Reshape for single feature
+    future_price = model.predict(last_close_price)[0]  # Get future price as a single value
+    current_price = last_close_price[0][0]  # Current closing price
 
+    logging.info(f"Prediction completed. Future price: {future_price}")
+
+    # Calculate stop loss percentage as 2% of the current price
+    stop_loss_percentage = 0.02 * current_price
+    stop_loss_price = current_price - stop_loss_percentage
+
+    # Determine recommendation based on price change
     price_diff = future_price - current_price
-    threshold = 0.01 * current_price
+    threshold = 0.01 * current_price  # 1% threshold to avoid small fluctuations
     if price_diff > threshold:
         recommendation = "Buy"
     elif price_diff < -threshold:
@@ -61,61 +81,53 @@ def train_model(stock_data, prediction_days=15, model_type='linear'):
     else:
         recommendation = "Hold"
 
-    return recommendation, future_price, current_price
+    return recommendation, future_price, current_price, stop_loss_price
 
-# Function to determine the best period to Buy/Sell within a specified range
-def best_period_to_trade(stock_data, start_date, end_date):
-    try:
-        filtered_data = stock_data.loc[start_date:end_date]
-        min_price_row = filtered_data['Close'].idxmin()
-        max_price_row = filtered_data['Close'].idxmax()
-
-        if min_price_row < max_price_row:
-            return f"Buy on {min_price_row.strftime('%Y-%m-%d')} and Sell on {max_price_row.strftime('%Y-%m-%d')}"
-        else:
-            return "Hold, as no profitable opportunity was found in this period."
-    except Exception as e:
-        return f"Error finding trade period: {str(e)}"
-
-# Function to calculate stop-loss price
-def calculate_stop_loss(current_price, percent):
-    return current_price * (1 - percent / 100)
-
+# Route for the homepage
 @app.route('/')
 def home():
     return send_from_directory(os.getcwd(), 'home.html')
 
-# Prediction route
+# API route to predict stock prices with Buy/Sell/Hold recommendation
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        logging.info("Received a request for prediction")
         data = request.get_json()
         symbol = data.get('symbol', '').strip().upper()
         model_type = data.get('model_type', 'linear').lower()
-        prediction_days = int(data.get('prediction_days', 15))
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
-        stop_loss_percent = float(data.get('stop_loss_percent', 5))
 
         if not symbol:
+            logging.warning("No stock symbol provided")
             return jsonify({'error': 'Please provide a valid stock symbol.'}), 400
 
-        symbol = INDIAN_STOCKS.get(symbol, symbol)
-        stock_data = get_stock_data(symbol)
+        # Fetch stock data for the last 30 days
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        stock_data = get_stock_data(symbol, start=start_date, end=end_date)
 
-        recommendation, future_price, current_price = train_model(stock_data, prediction_days, model_type)
-        trade_recommendation = best_period_to_trade(stock_data, start_date, end_date)
-        stop_loss_price = calculate_stop_loss(current_price, stop_loss_percent)
+        # Get prediction and stop loss
+        recommendation, future_price, current_price, stop_loss_price = train_model(stock_data, model_type=model_type)
+        logging.info(f"Recommendation for {symbol}: {recommendation}")
 
-        currency = '₹' if symbol.endswith('.NS') else '$'
+        # Determine currency based on symbol
+        currency = '₹' if symbol.endswith('.NS') else '$'  # Indian Rupee for NSE stocks
 
-        return jsonify({
+        response = jsonify({
             'prediction': f"The recommendation for {symbol} is to '{recommendation}'.",
             'details': f"Predicted future price: {currency}{future_price:.2f}, Current price: {currency}{current_price:.2f}",
-            'trade_recommendation': trade_recommendation,
-            'stop_loss': f"Suggested stop-loss price: {currency}{stop_loss_price:.2f}"
+            'stop_loss': f"Suggested Stop Loss Price: {currency}{stop_loss_price:.2f}"
         })
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+
+        return response
 
     except Exception as e:
         logging.error(f"Error during prediction: {e}")
         return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5500))
+    app.run(host='0.0.0.0', port=port, debug=True)
