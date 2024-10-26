@@ -45,6 +45,10 @@ def train_model(symbol, stock_data, model_type='linear'):
     # Drop rows with NaN values (if any)
     stock_data.dropna(inplace=True)
 
+    # Ensure there is data after dropping NaNs
+    if stock_data.empty:
+        raise ValueError("No valid data available after processing.")
+
     # Create the 'Prediction' column (next day's close price)
     stock_data['Prediction'] = stock_data[['Close']].shift(-1)
 
@@ -122,8 +126,7 @@ def predict():
 
         response = jsonify({
             'prediction': f"The recommendation for {symbol} is to '{recommendation}'.",
-            'details': f"Predicted future price: {currency}{future_price:.2f}, Current price: {currency}{current_price:.2f}, Stop Loss Price: {currency}{stop_loss_price:.2f}",
-            'stop_loss': f"{currency}{stop_loss_price:.2f}"
+            'details': f"Predicted future price: {currency}{future_price:.2f}, Current price: {currency}{current_price:.2f}, Stop Loss Price: {currency}{stop_loss_price:.2f}"
         })
         response.headers.add('Access-Control-Allow-Origin', '*')  # Add CORS headers manually
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
@@ -132,8 +135,9 @@ def predict():
         return response
 
     except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
+        logging.error(f"Error during prediction: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5500))
+    app.run(host='0.0.0.0', port=port, debug=True)
