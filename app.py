@@ -73,7 +73,7 @@ def train_model(symbol, stock_data, model_type='linear'):
     model.fit(X_train, y_train)
 
     # Now we predict the next day's stock price using the last available close price (1 feature)
-    last_close_price = stock_data[['Close', 'High', 'Low', 'Volume']].values[-1].reshape(1, -1)  # Reshape for multiple features
+    last_close_price = stock_data[['Close', 'High', 'Low', 'Volume']].iloc[-1].values.reshape(1, -1)  # Reshape for multiple features
     future_price = model.predict(last_close_price)[0]  # Get future price as a single value
     current_price = last_close_price[0][0]  # Current closing price
 
